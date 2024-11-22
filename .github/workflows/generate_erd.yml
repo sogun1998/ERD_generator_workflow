@@ -1,0 +1,72 @@
+name: Generate ERD with SchemaSpy and Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  generate-erd:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read  # Grant read access to repository contents
+    services:
+      postgres:
+        image: postgres:13
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: mydatabase
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Wait for PostgreSQL to start
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U user; then
+              echo "PostgreSQL is ready"
+              break
+            else
+              echo "Waiting for PostgreSQL..."
+              sleep 1
+            fi
+          done
+      - name: Create tables in PostgreSQL
+        run: |
+          echo "CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100));" > init.sql
+          echo "CREATE TABLE address (id SERIAL PRIMARY KEY, city VARCHAR(100), building VARCHAR(100), user_id INTEGER);" >> init.sql
+          echo "CREATE TABLE posts (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), content TEXT);" >> init.sql
+          PGPASSWORD=password psql -h localhost -U user -d mydatabase -f init.sql
+
+      - name: Prepare a directory for SchemaSpy output
+        run: mkdir -m 777 output
+      - name: Run SchemaSpy to generate ERD
+        run: |
+          docker run \
+            -v "${{ github.workspace }}/output:/output" \
+            --net="host" \
+            -v "${{ github.workspace }}/db/schemaspy.properties:/schemaspy.properties" \
+            -v "${{ github.workspace }}/db/schemameta.xml:/schemameta.xml" \
+            schemaspy/schemaspy:snapshot -meta schemameta.xml
+      - name: Upload ERD to artifacts
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./output
+
+  deploy:
+    needs: generate-erd
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
+
